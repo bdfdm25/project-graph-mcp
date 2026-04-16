@@ -1,0 +1,19 @@
+{
+  "vault": "~/Development/obsidian-vault",
+  "grammars": [
+    { "name": "typescript", "extensions": [".ts", ".tsx"] },
+    { "name": "javascript", "extensions": [".js", ".jsx", ".mjs"] },
+    { "name": "python",     "extensions": [".py"] }
+  ],
+  "ignore": [
+    "node_modules",
+    "dist",
+    ".git",
+    "coverage",
+    "__pycache__",
+    ".next",
+    ".angular"
+  ],
+  "db": "~/.project-graph/graph.db",
+  "watchDebounce": 300
+}

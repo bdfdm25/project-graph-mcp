@@ -1,0 +1,20 @@
+{
+  "name": "project-graph-mcp",
+  "version": "0.1.0",
+  "description": "Personal MCP server: code graph analysis + Obsidian vault integration",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/mcp/server.ts",
+    "dev": "tsx watch src/mcp/server.ts",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
