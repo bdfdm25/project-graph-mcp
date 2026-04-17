@@ -1,20 +1,32 @@
 # project-graph-mcp
 
-Personal MCP server for Claude Code. Combines code graph analysis with Obsidian vault integration to reduce token consumption and provide active project knowledge management.
+Personal MCP server for Claude Code. Combines code dependency graph analysis with Obsidian vault integration to reduce token consumption and provide persistent project knowledge across sessions.
 
-## What it does
+## How it works
 
-- **Code graph** — parses your codebase with Tree-sitter, stores a dependency graph in SQLite. Answers "what breaks if I change X?" without Claude reading 40+ files.
-- **Vault integration** — reads and writes your Obsidian vault. Decisions, conventions, and session handoffs become queryable context.
-- **Unified search** — one query across code symbols and vault notes.
+Each Claude Code session launches a separate server process over stdio. On startup the server automatically re-indexes the most recently used project (incremental — only changed files). A file watcher keeps the graph live as you edit.
+
+```
+Claude Code session
+    │
+    ▼
+project-graph-mcp (stdio)
+    ├── Tree-sitter parser     → extracts symbols, imports, exports
+    ├── SQLite + FTS5          → dependency graph + full-text search
+    ├── Louvain clustering     → groups files into architectural modules
+    ├── Chokidar watcher       → live graph updates on file save
+    └── Obsidian vault reader  → decisions, conventions, session handoffs
+```
+
+**The main payoff**: instead of reading 40+ files to understand blast radius, one tool call answers "what breaks if I change `auth/session.ts`?" from a pre-built graph.
 
 ## Requirements
 
 - Node.js 20+
-- Claude Code CLI
-- Obsidian vault at `~/Development/obsidian-vault/` (or configured path)
+- Claude Code CLI (`claude` in PATH)
+- Obsidian vault (default: `~/Development/obsidian-vault/`)
 
-## Setup
+## Installation
 
 ```bash
 git clone git@github.com:youruser/project-graph-mcp.git ~/Development/project-graph-mcp
@@ -22,70 +34,190 @@ cd ~/Development/project-graph-mcp
 npm install
 ```
 
-Registration is handled automatically by `~/.claude-config/install.sh`. To register manually:
+### Register with Claude Code
 
 ```bash
 claude mcp add --scope user project-graph \
-  ./node_modules/.bin/tsx \
-  -- ./src/mcp/server.ts
+  "$(pwd)/node_modules/.bin/tsx" \
+  -- "$(pwd)/src/mcp/server.ts"
 ```
 
-Verify:
+> **Scope `user`** — registers once for all your Claude Code sessions, not per-project.
+
+Verify the server is connected:
 
 ```bash
 claude mcp get project-graph
 # Status: ✓ Connected
 ```
 
+### Database directory
+
+The SQLite database is created automatically at `~/.project-graph/graph.db` on first use. No setup required.
+
 ## Configuration
 
-Edit `project-graph.config.json` in the project root:
+The server loads configuration from the first file found among:
+
+1. `./project-graph.config.json` (current working directory)
+2. `<repo-root>/project-graph.config.json`
+3. `~/.project-graph/config.json` (global user config)
+
+If none is found, built-in defaults are used. All fields are optional — only override what you need.
 
 ```json
 {
   "vault": "~/Development/obsidian-vault",
+  "db": "~/.project-graph/graph.db",
+  "watchDebounce": 300,
   "grammars": [
     { "name": "typescript", "extensions": [".ts", ".tsx"] },
     { "name": "javascript", "extensions": [".js", ".jsx", ".mjs"] },
     { "name": "python",     "extensions": [".py"] }
   ],
-  "ignore": ["node_modules", "dist", ".git", "coverage", "__pycache__", ".next", ".angular"],
-  "db": "~/.project-graph/graph.db",
-  "watchDebounce": 300
+  "ignore": [
+    "node_modules", "dist", ".git", "coverage",
+    "__pycache__", ".next", ".angular"
+  ]
 }
 ```
 
-Adding a new language: install the grammar (`npm install tree-sitter-go`) and add an entry to `grammars`. No code changes required.
+### Adding a language
+
+Install the tree-sitter grammar and add it to `grammars`:
+
+```bash
+npm install tree-sitter-go
+```
+
+```json
+{ "name": "go", "extensions": [".go"] }
+```
+
+No code changes required.
+
+## Usage
+
+### First-time project indexing
+
+When working on a new project, index it once:
+
+```
+index_project /absolute/path/to/your/project
+```
+
+After indexing, a file watcher starts automatically. Changes are picked up within 300ms (configurable via `watchDebounce`).
+
+### Subsequent sessions
+
+The server auto-indexes the most recently used project on startup. No manual action needed for your main project. For other projects, call `index_project` again — it is incremental and only re-parses changed files.
+
+### Multi-session use
+
+Each Claude Code session is a separate server process sharing the same SQLite database. The database uses WAL mode and a 5-second busy timeout, so concurrent reads/writes from multiple sessions are safe. Only one watcher runs per process — opening a second session on a different project will not affect the first session's watcher.
+
+## Tools reference
+
+### Project management
+
+| Tool | Required args | Description |
+|---|---|---|
+| `get_active_project` | `cwd` | Returns index status for the current working directory |
+| `list_projects` | — | Lists all indexed projects with last-indexed timestamps |
+| `index_project` | `path` | Indexes or re-indexes a project (incremental by mtime) |
+| `get_watcher_status` | — | Shows which project the live watcher is currently watching |
+
+### Dependency graph
+
+| Tool | Required args | Description |
+|---|---|---|
+| `get_dependencies` | `project_path`, `file` | All files this file imports, direct and transitive |
+| `get_blast_radius` | `project_path`, `file` | All files that import this file (what breaks on change) |
+
+### Module architecture
+
+| Tool | Required args | Description |
+|---|---|---|
+| `get_module_context` | `project_path`, `file` | The architectural cluster this file belongs to and all related files in it |
+| `find_similar_code` | `project_path`, `file` | Files similar by cluster membership and shared symbol names |
+
+Clusters are detected automatically via Louvain community detection on the dependency graph. Cluster names are derived from the common directory prefix of cluster members.
+
+### Search
+
+| Tool | Required args | Optional args | Description |
+|---|---|---|---|
+| `search_knowledge` | `query` | `project_path`, `limit` | Unified search: FTS5 across code symbols + substring across vault notes |
+| `search_vault` | `query` | `limit` | Full-text search across Obsidian vault notes only |
+
+### Vault — read
+
+| Tool | Required args | Description |
+|---|---|---|
+| `get_conventions` | — | Reads `Areas/claude-code-workflow.md` from the vault |
+| `get_project_context` | — | Returns conventions + recent architecture decisions in one call |
+
+### Vault — write
+
+| Tool | Required args | Optional args | Description |
+|---|---|---|---|
+| `write_decision` | `title`, `body` | `tags`, `status`, `context` | Saves an ADR to `Resources/decisions/YYYY-MM-DD-<slug>.md` |
+| `write_session_handoff` | `summary` | `project`, `tags` | Saves a session summary to `Archive/sessions/` |
+| `summarize_project_doc` | `path` | — | Reads a repo document so Claude can compress it, then call `write_project_summary` |
+| `write_project_summary` | `project_name`, `summary`, `source_doc` | `tags` | Saves a compressed doc summary to `Resources/projects/<name>/summary.md` |
+
+### Vault structure expected
+
+```
+~/Development/obsidian-vault/
+├── Areas/
+│   └── claude-code-workflow.md    ← read by get_conventions
+├── Resources/
+│   ├── decisions/                 ← write_decision output
+│   └── projects/                  ← write_project_summary output
+└── Archive/
+    └── sessions/                  ← write_session_handoff output
+```
+
+Directories are created automatically on first write. The vault path is configurable.
+
+## What gets indexed
+
+For each file, the parser extracts:
+
+- **TypeScript / JavaScript**: `import` statements, function declarations, class declarations, interface declarations, variable declarations
+- **Python**: `import` / `from … import` statements, function definitions, class definitions
+
+Edges in the graph represent import relationships. The `ignore` list in config controls which directories are skipped.
 
 ## Development
 
 ```bash
-npm run dev       # tsx watch — restarts on file change
-npm run typecheck # type check without emitting
-npm run build     # compile to dist/
+npm run dev        # tsx watch — restarts on file change
+npm run typecheck  # type check without emitting
+npm run build      # compile to dist/
 ```
 
-## Tools (by phase)
+### Project structure
 
-| Phase | Tool | Description |
-|---|---|---|
-| 1 | `get_active_project` | Auto-detect active project from CWD |
-| 1 | `list_projects` | List all indexed projects |
-| 2 | `index_project` | Index a codebase into the graph |
-| 2 | `get_dependencies` | Imports, direct + transitive |
-| 2 | `get_blast_radius` | What breaks if this file changes |
-| 3 | `get_conventions` | Read coding standards from vault |
-| 3 | `write_decision` | Persist architecture decision to vault |
-| 3 | `search_vault` | Full-text search across vault notes |
-| 3 | `write_session_handoff` | Save session summary to vault |
-| 3 | `summarize_project_doc` | Compress repo doc into vault summary |
-| 4 | *(incremental watcher)* | Live graph updates on file change |
-| 5 | `search_knowledge` | Unified code + vault search |
-| 5 | `get_project_context` | Conventions + decisions + architecture |
-| 6 | `get_module_context` | Architecture cluster for a file |
-| 6 | `find_similar_code` | Semantically similar files/symbols |
+```
+src/
+├── config.ts              # Config loader (3 candidate paths + defaults)
+├── graph/
+│   ├── store.ts           # SQLite schema, FTS5, all DB queries
+│   ├── builder.ts         # Incremental indexer, orchestrates parser + store
+│   ├── algorithms.ts      # BFS for get_dependencies + get_blast_radius
+│   ├── communities.ts     # Louvain clustering, get_module_context, find_similar_code
+│   └── watcher.ts         # Chokidar file watcher, debounced re-index per file
+├── parsers/
+│   └── code-parser.ts     # Tree-sitter parser (ESM-safe, handles TS dual export)
+└── mcp/
+    ├── server.ts           # MCP server, boot sync, stdio transport
+    └── tools.ts            # Tool definitions + handlers (16 tools)
+```
 
-## Status
+### Known constraints
 
-Phase 1 complete — MCP skeleton, config loader, server registration.
-See `docs/` for the full development plan and publishing guide (forthcoming).
+- **Grammar versions**: `tree-sitter-typescript@0.23.2` requires `tree-sitter@^0.21`. JS and Python grammars are pinned to `@0.21.x` for compatibility.
+- **FTS5 rebuild**: the `nodes_fts` table is an external content table. After a full index run, `rebuildFts()` is called explicitly — triggers alone do not populate external content tables.
+- **Boot sync**: only the most recently used project is synced on startup. Syncing all projects on every session start causes SQLite write contention in multi-session use.
