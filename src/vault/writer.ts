@@ -1,6 +1,7 @@
 import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { config } from '../config.js';
+import type { ObservationRow } from '../graph/store.js';
 
 // ─── Frontmatter builder ──────────────────────────────────────────────────────
 
@@ -106,6 +107,63 @@ export function writeProjectSummary(opts: WriteProjectSummaryOptions): string {
   };
 
   return writeNote(relPath, frontmatter, opts.summary);
+}
+
+// ─── Graduate observations → vault note ──────────────────────────────────────
+
+export interface GraduateObservationsOptions {
+  title: string;
+  observations: ObservationRow[];
+  projectTag?: string;
+  tags?: string[];
+}
+
+export function graduateObservations(opts: GraduateObservationsOptions): string {
+  const date = isoDate();
+  const slug = opts.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  const relPath = `Resources/graduated/${date}-${slug}.md`;
+
+  const frontmatter: Record<string, unknown> = {
+    title: opts.title,
+    date,
+    type: 'graduated-observations',
+    tags: ['graduated', ...(opts.projectTag ? [opts.projectTag] : []), ...(opts.tags ?? [])],
+  };
+  if (opts.projectTag) frontmatter['project'] = opts.projectTag;
+
+  // Group observations by type
+  const byType: Record<string, ObservationRow[]> = {};
+  for (const obs of opts.observations) {
+    if (!byType[obs.type]) byType[obs.type] = [];
+    byType[obs.type].push(obs);
+  }
+
+  const typeLabels: Record<string, string> = {
+    decision: 'Decisions',
+    discovery: 'Discoveries',
+    error: 'Errors & Fixes',
+    'code-change': 'Code Changes',
+    note: 'Notes',
+    pattern: 'Patterns',
+  };
+
+  let body = '';
+  for (const [type, rows] of Object.entries(byType)) {
+    body += `\n## ${typeLabels[type] ?? type}\n\n`;
+    for (const row of rows) {
+      const ts = new Date(row.created_at).toISOString().slice(0, 16).replace('T', ' ');
+      const ctx = row.context ? ` _(${JSON.parse(row.context).file ?? row.context})_` : '';
+      body += `- **${ts}**${ctx}: ${row.content}\n`;
+    }
+  }
+
+  body += `\n---\n_Graduated from ${opts.observations.length} episodic observations on ${date}._\n`;
+
+  return writeNote(relPath, frontmatter, body);
 }
 
 // ─── Append backlink to an existing note ──────────────────────────────────────

@@ -4,9 +4,12 @@ import { resolve } from 'path';
 import { config } from '../config.js';
 import { indexProject } from '../graph/builder.js';
 import { getDependencies, getBlastRadius } from '../graph/algorithms.js';
-import { listProjects, getProjectByPath } from '../graph/store.js';
+import { listProjects, getProjectByPath, upsertSession, closeSession, insertObservation, searchObservations, getSessionTimeline, getObservation, listSessions } from '../graph/store.js';
+import type { ObservationType } from '../graph/store.js';
 import { searchVault, getConventions, getRecentDecisions } from '../vault/reader.js';
-import { writeDecision, writeSessionHandoff, writeProjectSummary } from '../vault/writer.js';
+import { writeDecision, writeSessionHandoff, writeProjectSummary, graduateObservations } from '../vault/writer.js';
+import { getVaultIndex, traceIdea, detectEmergingClusters } from '../vault/intelligence.js';
+import { searchObservations as searchObs, getObservation as getObs, promoteObservation } from '../graph/store.js';
 import { getActiveWatcherInfo } from '../graph/watcher.js';
 import { searchNodes } from '../graph/store.js';
 import { getModuleContext, findSimilarFiles } from '../graph/communities.js';
@@ -295,6 +298,236 @@ export const TOOLS: Tool[] = [
     },
   },
   {
+    name: 'write_observation',
+    description:
+      'Saves a memory observation to the episodic store (SQLite). ' +
+      'Use to record decisions, discoveries, errors, code changes, notes, or patterns during a session. ' +
+      'Observations are searchable across sessions via search_observations.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: {
+          type: 'string',
+          description: 'Current session ID (from CLAUDE_SESSION_ID env or hook)',
+        },
+        type: {
+          type: 'string',
+          enum: ['decision', 'discovery', 'error', 'code-change', 'note', 'pattern'],
+          description: 'Observation type',
+        },
+        content: {
+          type: 'string',
+          description: 'One-sentence human-readable observation',
+        },
+        project_tag: {
+          type: 'string',
+          description: 'Semantic project name (e.g. cafe, civil-engineering). Independent of CWD.',
+        },
+        context: {
+          type: 'object',
+          description: 'Optional structured context: { file?, line?, tool?, symbol?, url? }',
+          properties: {
+            file: { type: 'string' },
+            line: { type: 'number' },
+            tool: { type: 'string' },
+            symbol: { type: 'string' },
+            url: { type: 'string' },
+          },
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional tags for filtering',
+        },
+      },
+      required: ['session_id', 'type', 'content'],
+    },
+  },
+  {
+    name: 'search_observations',
+    description:
+      'Full-text search (FTS5) across all episodic memory observations. ' +
+      'Returns ranked results with session context. Optionally filter by project_tag.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Search query',
+        },
+        project_tag: {
+          type: 'string',
+          description: 'Optional: scope to this project (e.g. cafe)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max results (default: 20)',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'get_session_timeline',
+    description:
+      'Returns all observations for a session in chronological order. ' +
+      'Use to reconstruct what happened during a past session.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: {
+          type: 'string',
+          description: 'Session ID to inspect',
+        },
+      },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'list_sessions',
+    description:
+      'Lists recent Claude Code sessions with their project tag, start/end time, and observation count. ' +
+      'Optionally filter by project_tag.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project_tag: {
+          type: 'string',
+          description: 'Optional: filter to sessions for this project',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max sessions to return (default: 20)',
+        },
+      },
+    },
+  },
+  {
+    name: 'close_session',
+    description: 'Marks a session as ended with an optional summary. Called automatically by close-session.sh hook and /compact.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: {
+          type: 'string',
+          description: 'Session ID to close',
+        },
+        summary: {
+          type: 'string',
+          description: 'Optional session summary',
+        },
+      },
+      required: ['session_id'],
+    },
+  },
+  {
+    name: 'get_observation',
+    description: 'Returns a single observation by ID with full context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'Observation ID',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
+    name: 'get_vault_index',
+    description:
+      'Returns a structured index of all vault notes grouped by area (Areas, Projects, Resources, etc.). ' +
+      'Includes title, tags, wikilinks, and mtime for each note. ' +
+      'Use at session start for a compact overview of the knowledge base.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        area: {
+          type: 'string',
+          description: 'Optional: filter to a specific vault area (e.g. "Areas", "Resources")',
+        },
+      },
+    },
+  },
+  {
+    name: 'trace_idea',
+    description:
+      'Traces the evolution of an idea or topic across the vault. ' +
+      'Searches for the topic by content, title, and wikilinks; follows one-hop connections. ' +
+      'Returns a timeline (oldest → newest) showing how the idea developed. ' +
+      'Uses Obsidian CLI for richer results when Obsidian is running.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        topic: {
+          type: 'string',
+          description: 'Topic or idea to trace (e.g. "episodic memory", "RxJS", "auth")',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max notes to return (default: 30)',
+        },
+      },
+      required: ['topic'],
+    },
+  },
+  {
+    name: 'detect_emerging_clusters',
+    description:
+      'Detects idea clusters forming in the vault based on wikilink connectivity. ' +
+      'Uses connected component analysis on the wikilink graph. ' +
+      'Returns clusters ranked by internal link strength, suggesting which groups of notes ' +
+      'are coalescing into projects, essays, or products.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        min_cluster_size: {
+          type: 'number',
+          description: 'Minimum notes per cluster (default: 2)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max clusters to return (default: 10)',
+        },
+      },
+    },
+  },
+  {
+    name: 'graduate_observations',
+    description:
+      'Promotes episodic memory observations into a structured vault note. ' +
+      'Searches observations by query, groups them by type, and writes a graduated note ' +
+      'to Resources/graduated/. Marks observations as promoted in the DB.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: {
+          type: 'string',
+          description: 'Title of the graduated note',
+        },
+        query: {
+          type: 'string',
+          description: 'Search query to find observations to graduate',
+        },
+        project_tag: {
+          type: 'string',
+          description: 'Optional: filter observations to this project tag',
+        },
+        limit: {
+          type: 'number',
+          description: 'Max observations to include (default: 50)',
+        },
+        tags: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Additional tags for the graduated note',
+        },
+      },
+      required: ['title', 'query'],
+    },
+  },
+  {
     name: 'write_project_summary',
     description:
       'Writes a compressed project document summary to the vault at Resources/projects/<name>/summary.md.',
@@ -564,6 +797,129 @@ export async function handleTool(
         tags: Array.isArray(args.tags) ? args.tags.map(String) : [],
       });
       return ok({ created: absPath.replace(config.vault + '/', '') });
+    }
+
+    case 'get_vault_index': {
+      const index = getVaultIndex();
+      if (args.area) {
+        const area = String(args.area);
+        const filtered = index.by_area[area];
+        if (!filtered) return err(`Area not found: ${area}. Available: ${Object.keys(index.by_area).join(', ')}`);
+        return ok({ area, notes: filtered, count: filtered.length, generated_at: index.generated_at });
+      }
+      return ok(index);
+    }
+
+    case 'trace_idea': {
+      const topic = String(args.topic ?? '').trim();
+      if (!topic) return err('topic is required');
+      const limit = typeof args.limit === 'number' ? args.limit : 30;
+      const result = await traceIdea(topic, limit);
+      return ok(result);
+    }
+
+    case 'detect_emerging_clusters': {
+      const minSize = typeof args.min_cluster_size === 'number' ? args.min_cluster_size : 2;
+      const limit = typeof args.limit === 'number' ? args.limit : 10;
+      const result = detectEmergingClusters(minSize, limit);
+      return ok(result);
+    }
+
+    case 'graduate_observations': {
+      const title = String(args.title ?? '').trim();
+      const query = String(args.query ?? '').trim();
+      if (!title) return err('title is required');
+      if (!query) return err('query is required');
+      const projectTag = args.project_tag ? String(args.project_tag) : undefined;
+      const limit = typeof args.limit === 'number' ? args.limit : 50;
+
+      const observations = searchObs(query, projectTag, limit);
+      if (observations.length === 0) return err(`No observations found for query: "${query}"`);
+
+      const absPath = graduateObservations({
+        title,
+        observations,
+        projectTag,
+        tags: Array.isArray(args.tags) ? args.tags.map(String) : [],
+      });
+
+      // Mark as promoted
+      for (const obs of observations) {
+        promoteObservation(obs.id);
+      }
+
+      return ok({
+        created: absPath.replace(config.vault + '/', ''),
+        observations_graduated: observations.length,
+        observations_promoted: observations.length,
+      });
+    }
+
+    case 'write_observation': {
+      const sessionId = String(args.session_id ?? '').trim();
+      const type = String(args.type ?? '').trim() as ObservationType;
+      const content = String(args.content ?? '').trim();
+      if (!sessionId) return err('session_id is required');
+      if (!content) return err('content is required');
+
+      const validTypes: ObservationType[] = ['decision', 'discovery', 'error', 'code-change', 'note', 'pattern'];
+      if (!validTypes.includes(type)) return err(`type must be one of: ${validTypes.join(', ')}`);
+
+      const projectTag = args.project_tag ? String(args.project_tag) : null;
+
+      // Ensure session row exists (idempotent)
+      upsertSession(sessionId, projectTag, null);
+
+      const id = `obs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      insertObservation({
+        id,
+        session_id: sessionId,
+        project_tag: projectTag,
+        type,
+        content,
+        context: args.context && typeof args.context === 'object' ? args.context as Record<string, unknown> : undefined,
+        tags: Array.isArray(args.tags) ? args.tags.map(String) : undefined,
+      });
+      return ok({ id, session_id: sessionId, type, content });
+    }
+
+    case 'search_observations': {
+      const query = String(args.query ?? '').trim();
+      if (!query) return err('query is required');
+      const projectTag = args.project_tag ? String(args.project_tag) : undefined;
+      const limit = typeof args.limit === 'number' ? args.limit : 20;
+      const results = searchObservations(query, projectTag, limit);
+      return ok({ query, results, count: results.length });
+    }
+
+    case 'get_session_timeline': {
+      const sessionId = String(args.session_id ?? '').trim();
+      if (!sessionId) return err('session_id is required');
+      const observations = getSessionTimeline(sessionId);
+      return ok({ session_id: sessionId, observations, count: observations.length });
+    }
+
+    case 'list_sessions': {
+      const projectTag = args.project_tag ? String(args.project_tag) : undefined;
+      const limit = typeof args.limit === 'number' ? args.limit : 20;
+      const sessions = listSessions(projectTag, limit);
+      return ok({ sessions, count: sessions.length });
+    }
+
+    case 'close_session': {
+      const sessionId = String(args.session_id ?? '').trim();
+      if (!sessionId) return err('session_id is required');
+      const summary = args.summary ? String(args.summary) : undefined;
+      closeSession(sessionId, summary);
+      return ok({ closed: sessionId, summary: summary ?? null });
+    }
+
+    case 'get_observation': {
+      const id = String(args.id ?? '').trim();
+      if (!id) return err('id is required');
+      const obs = getObservation(id);
+      if (!obs) return err(`Observation not found: ${id}`);
+      return ok(obs);
     }
 
     default:

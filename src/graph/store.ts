@@ -71,6 +71,55 @@ function migrate(db: Database.Database): void {
       mtime       INTEGER NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS sessions (
+      id          TEXT PRIMARY KEY,
+      project_tag TEXT,
+      project_path TEXT,
+      started_at  INTEGER NOT NULL,
+      ended_at    INTEGER,
+      summary     TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS observations (
+      id          TEXT PRIMARY KEY,
+      session_id  TEXT NOT NULL REFERENCES sessions(id),
+      project_tag TEXT,
+      type        TEXT NOT NULL,
+      content     TEXT NOT NULL,
+      context     TEXT,
+      tags        TEXT,
+      promoted    INTEGER DEFAULT 0,
+      created_at  INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_observations_session ON observations(session_id);
+    CREATE INDEX IF NOT EXISTS idx_observations_project ON observations(project_tag);
+    CREATE INDEX IF NOT EXISTS idx_observations_type ON observations(type);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+      content,
+      context,
+      content='observations',
+      content_rowid='rowid'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS obs_ai AFTER INSERT ON observations BEGIN
+      INSERT INTO observations_fts(rowid, content, context)
+        VALUES (new.rowid, new.content, new.context);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS obs_ad AFTER DELETE ON observations BEGIN
+      INSERT INTO observations_fts(observations_fts, rowid, content, context)
+        VALUES ('delete', old.rowid, old.content, old.context);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS obs_au AFTER UPDATE ON observations BEGIN
+      INSERT INTO observations_fts(observations_fts, rowid, content, context)
+        VALUES ('delete', old.rowid, old.content, old.context);
+      INSERT INTO observations_fts(rowid, content, context)
+        VALUES (new.rowid, new.content, new.context);
+    END;
+
     CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
       id UNINDEXED,
       project_id UNINDEXED,
@@ -276,4 +325,137 @@ export function getRecentProjects(limit = 5): ProjectRow[] {
   return getDb().prepare(
     'SELECT * FROM projects WHERE last_indexed_at IS NOT NULL ORDER BY last_indexed_at DESC LIMIT ?'
   ).all(limit) as ProjectRow[];
+}
+
+// ─── Sessions ────────────────────────────────────────────────────────────────
+
+export interface SessionRow {
+  id: string;
+  project_tag: string | null;
+  project_path: string | null;
+  started_at: number;
+  ended_at: number | null;
+  summary: string | null;
+}
+
+export function upsertSession(id: string, projectTag: string | null, projectPath: string | null): void {
+  getDb().prepare(`
+    INSERT INTO sessions (id, project_tag, project_path, started_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      project_tag  = excluded.project_tag,
+      project_path = excluded.project_path
+  `).run(id, projectTag, projectPath, Date.now());
+}
+
+export function closeSession(id: string, summary?: string): void {
+  getDb().prepare(`
+    UPDATE sessions SET ended_at = ?, summary = ? WHERE id = ?
+  `).run(Date.now(), summary ?? null, id);
+}
+
+// ─── Observations ────────────────────────────────────────────────────────────
+
+export interface ObservationRow {
+  id: string;
+  session_id: string;
+  project_tag: string | null;
+  type: string;
+  content: string;
+  context: string | null;
+  tags: string | null;
+  promoted: number;
+  created_at: number;
+}
+
+export type ObservationType = 'decision' | 'discovery' | 'error' | 'code-change' | 'note' | 'pattern';
+
+export function insertObservation(row: {
+  id: string;
+  session_id: string;
+  project_tag: string | null;
+  type: ObservationType;
+  content: string;
+  context?: Record<string, unknown>;
+  tags?: string[];
+}): void {
+  getDb().prepare(`
+    INSERT INTO observations (id, session_id, project_tag, type, content, context, tags, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    row.id,
+    row.session_id,
+    row.project_tag,
+    row.type,
+    row.content,
+    row.context ? JSON.stringify(row.context) : null,
+    row.tags ? JSON.stringify(row.tags) : null,
+    Date.now()
+  );
+}
+
+export interface FtsObservationResult {
+  id: string;
+  session_id: string;
+  project_tag: string | null;
+  type: string;
+  content: string;
+  context: string | null;
+  tags: string | null;
+  promoted: number;
+  created_at: number;
+  rank: number;
+}
+
+export function searchObservations(query: string, projectTag?: string, limit = 20): FtsObservationResult[] {
+  const db = getDb();
+  const ftsQuery = query
+    .trim()
+    .split(/\s+/)
+    .map((w) => w.replace(/[^a-zA-Z0-9_]/g, '') + '*')
+    .filter(Boolean)
+    .join(' ');
+  if (projectTag) {
+    return db.prepare(`
+      SELECT o.*, observations_fts.rank AS rank
+      FROM observations_fts
+      JOIN observations o ON o.rowid = observations_fts.rowid
+      WHERE observations_fts MATCH ? AND o.project_tag = ?
+      ORDER BY rank
+      LIMIT ?
+    `).all(ftsQuery, projectTag, limit) as FtsObservationResult[];
+  }
+  return db.prepare(`
+    SELECT o.*, observations_fts.rank AS rank
+    FROM observations_fts
+    JOIN observations o ON o.rowid = observations_fts.rowid
+    WHERE observations_fts MATCH ?
+    ORDER BY rank
+    LIMIT ?
+  `).all(ftsQuery, limit) as FtsObservationResult[];
+}
+
+export function getSessionTimeline(sessionId: string): ObservationRow[] {
+  return getDb().prepare(`
+    SELECT * FROM observations WHERE session_id = ? ORDER BY created_at ASC
+  `).all(sessionId) as ObservationRow[];
+}
+
+export function getObservation(id: string): ObservationRow | undefined {
+  return getDb().prepare('SELECT * FROM observations WHERE id = ?').get(id) as ObservationRow | undefined;
+}
+
+export function listSessions(projectTag?: string, limit = 20): SessionRow[] {
+  if (projectTag) {
+    return getDb().prepare(`
+      SELECT * FROM sessions WHERE project_tag = ? ORDER BY started_at DESC LIMIT ?
+    `).all(projectTag, limit) as SessionRow[];
+  }
+  return getDb().prepare(`
+    SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?
+  `).all(limit) as SessionRow[];
+}
+
+export function promoteObservation(id: string): void {
+  getDb().prepare('UPDATE observations SET promoted = 1 WHERE id = ?').run(id);
 }
