@@ -1,5 +1,5 @@
 {
-  "vault": "~/Development/obsidian-vault",
+  "vault": "~/Development/Knowledge",
   "grammars": [
     { "name": "typescript", "extensions": [".ts", ".tsx"] },
     { "name": "javascript", "extensions": [".js", ".jsx", ".mjs"] },
