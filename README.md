@@ -21,10 +21,10 @@ Claude Code session (any directory)
                       ▼
          project-graph-mcp (--scope user, stdio)
                       │
-         ┌────────────┼────────────────┐
-         ▼            ▼                ▼
-    Code graph    Vault I/O      Episodic memory
-    (8 tools)    (8 tools)         (6 tools)
+         ┌────────────┼──────────────────┬──────────────┐
+         ▼            ▼                  ▼              ▼
+    Code graph    Vault I/O      Episodic memory     Search
+    (8 tools)    (6 tools)         (6 tools)        (2 tools)
                       │
               Vault intelligence
                  (4 tools)
@@ -47,7 +47,8 @@ SEMANTIC MEMORY    — Obsidian vault: decisions, conventions, wikilinks, gradua
 - Claude Code CLI (`claude` in PATH)
 - `sqlite3` CLI — required by shell hooks
 - `jq` — required by shell hooks
-- Obsidian vault (default: `~/Development/obsidian-vault/`)
+- Obsidian vault — path configured via `vault` field in `project-graph.config.json`
+- **Optional**: [Obsidian Local REST API](https://github.com/coddingtonbear/obsidian-local-rest-api) plugin — enables enriched backlink results in `trace_idea` and `get_vault_index` via port 27124; both tools degrade gracefully when Obsidian is not running
 
 ## Installation
 
@@ -126,7 +127,7 @@ All fields are optional — only override what you need:
 
 ```json
 {
-  "vault": "~/Development/obsidian-vault",
+  "vault": "~/path/to/your/obsidian-vault",
   "db": "~/.project-graph/graph.db",
   "watchDebounce": 300,
   "grammars": [
@@ -195,7 +196,7 @@ No code changes required — grammars are loaded dynamically.
 
 | Tool | Args | Description |
 |---|---|---|
-| `write_observation` | `session_id`, `project_tag`, `type`, `content`, `context?`, `tags?` | Records an observation (decision/discovery/error/code-change/note/pattern) |
+| `write_observation` | `session_id`, `project_tag`, `type`, `content`, `context?`, `tags?` | Records an observation (decision/discovery/error/code-change/note/pattern). `context` is an optional object `{ file?, line?, tool?, symbol?, url? }` |
 | `search_observations` | `query`, `project_tag?`, `limit?` | FTS5 search across all recorded observations |
 | `get_session_timeline` | `session_id` | All observations from a session in chronological order |
 | `get_observation` | `id` | Fetch a single observation by ID |
@@ -214,7 +215,7 @@ No code changes required — grammars are loaded dynamically.
 ## Vault structure
 
 ```
-~/Development/obsidian-vault/
+<your-vault>/
 ├── Areas/
 │   └── claude-code-workflow.md    ← get_conventions (REQUIRED)
 ├── Resources/
@@ -270,7 +271,7 @@ graduate_observations title="myproject — Session Memory 2026-04-23"
 
 ## Skills
 
-Five `/compact`-integrated skills are available when the skill files are in `~/.claude/skills/`:
+These are external Claude Code skill files, not part of the MCP server itself. They wrap MCP tool calls into convenient slash commands. To use them, place the skill files in `~/.claude/skills/`:
 
 | Skill | What it does |
 |---|---|
@@ -333,6 +334,9 @@ docs/
 ```sql
 -- Code graph
 projects, files, nodes, edges, nodes_fts (FTS5)
+
+-- Vault
+vault_notes  (id, path, title, tags, links, content, mtime)
 
 -- Episodic memory
 sessions     (id, project_tag, project_path, started_at, ended_at, summary)
