@@ -2,6 +2,18 @@ import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import { config } from '../config.js';
+
+const MAX_DOC_BYTES = 512_000;
+
+function validatePath(input: string): string | null {
+  const abs = resolve(input);
+  const roots = [...config.trustedRoots, config.vault];
+  return roots.some((root) => abs === root || abs.startsWith(root + '/')) ? abs : null;
+}
+
+function wrapUntrusted(content: string, source: string): string {
+  return `<external-content source="${source}">\n${content}\n</external-content>`;
+}
 import { indexProject } from '../graph/builder.js';
 import { getDependencies, getBlastRadius } from '../graph/algorithms.js';
 import { listProjects, getProjectByPath, upsertSession, closeSession, insertObservation, searchObservations, getSessionTimeline, getObservation, listSessions } from '../graph/store.js';
@@ -586,9 +598,9 @@ export async function handleTool(
     case 'get_active_project': {
       const cwd = String(args.cwd ?? '').trim();
       if (!cwd) return err('cwd is required');
-      if (!existsSync(cwd)) return err(`Directory not found: ${cwd}`);
-
-      const abs = resolve(cwd);
+      const abs = validatePath(cwd);
+      if (!abs) return err(`Path not allowed: ${cwd}. Must be under a trusted root.`);
+      if (!existsSync(abs)) return err(`Directory not found: ${cwd}`);
       const project = getProjectByPath(abs);
 
       return ok({
@@ -611,9 +623,11 @@ export async function handleTool(
     case 'index_project': {
       const path = String(args.path ?? '').trim();
       if (!path) return err('path is required');
-      if (!existsSync(path)) return err(`Directory not found: ${path}`);
+      const absPath = validatePath(path);
+      if (!absPath) return err(`Path not allowed: ${path}. Must be under a trusted root.`);
+      if (!existsSync(absPath)) return err(`Directory not found: ${path}`);
 
-      const result = indexProject(path);
+      const result = indexProject(absPath);
       return ok(result);
     }
 
@@ -734,7 +748,10 @@ export async function handleTool(
       const query = String(args.query ?? '').trim();
       if (!query) return err('query is required');
       const limit = typeof args.limit === 'number' ? args.limit : 20;
-      const results = searchVault(query, limit);
+      const results = searchVault(query, limit).map((r) => ({
+        ...r,
+        snippet: wrapUntrusted(r.snippet, r.path),
+      }));
       return ok({ query, results, count: results.length });
     }
 
@@ -771,12 +788,19 @@ export async function handleTool(
     case 'summarize_project_doc': {
       const docPath = String(args.path ?? '').trim();
       if (!docPath) return err('path is required');
-      if (!existsSync(docPath)) return err(`File not found: ${docPath}`);
+      const absDocPath = validatePath(docPath);
+      if (!absDocPath) return err(`Path not allowed: ${docPath}. Must be under a trusted root.`);
+      if (!existsSync(absDocPath)) return err(`File not found: ${docPath}`);
 
-      const content = readFileSync(docPath, 'utf-8');
+      const raw = readFileSync(absDocPath, 'utf-8');
+      const byteLength = Buffer.byteLength(raw);
+      if (byteLength > MAX_DOC_BYTES) {
+        return err(`File too large (${Math.round(byteLength / 1024)} KB). Max: ${MAX_DOC_BYTES / 1024} KB.`);
+      }
+
       return ok({
-        path: docPath,
-        content,
+        path: absDocPath,
+        content: wrapUntrusted(raw, absDocPath),
         instruction:
           'Produce a compressed summary of the above document, then call write_project_summary to persist it.',
       });
@@ -888,14 +912,20 @@ export async function handleTool(
       if (!query) return err('query is required');
       const projectTag = args.project_tag ? String(args.project_tag) : undefined;
       const limit = typeof args.limit === 'number' ? args.limit : 20;
-      const results = searchObservations(query, projectTag, limit);
+      const results = searchObservations(query, projectTag, limit).map((r) => ({
+        ...r,
+        content: wrapUntrusted(r.content, `observation:${r.id}`),
+      }));
       return ok({ query, results, count: results.length });
     }
 
     case 'get_session_timeline': {
       const sessionId = String(args.session_id ?? '').trim();
       if (!sessionId) return err('session_id is required');
-      const observations = getSessionTimeline(sessionId);
+      const observations = getSessionTimeline(sessionId).map((r) => ({
+        ...r,
+        content: wrapUntrusted(r.content, `observation:${r.id}`),
+      }));
       return ok({ session_id: sessionId, observations, count: observations.length });
     }
 
