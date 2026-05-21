@@ -9,14 +9,21 @@ function isoDate(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+const FRONTMATTER_UNSAFE = /[:#"'\n\r]/;
+
+function sanitizeFrontmatterValue(value: string): string {
+  if (!FRONTMATTER_UNSAFE.test(value)) return value;
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n|\r/g, ' ')}"`;
+}
+
 function buildFrontmatter(fields: Record<string, unknown>): string {
   const lines = ['---'];
   for (const [key, value] of Object.entries(fields)) {
     if (Array.isArray(value)) {
       lines.push(`${key}:`);
-      for (const item of value) lines.push(`  - ${item}`);
+      for (const item of value) lines.push(`  - ${sanitizeFrontmatterValue(String(item))}`);
     } else {
-      lines.push(`${key}: ${value}`);
+      lines.push(`${key}: ${sanitizeFrontmatterValue(String(value))}`);
     }
   }
   lines.push('---');

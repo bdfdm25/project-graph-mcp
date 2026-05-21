@@ -14,6 +14,7 @@ export interface Config {
   ignore: string[];
   db: string;
   watchDebounce: number;
+  trustedRoots: string[];
 }
 
 const DEFAULT_CONFIG: Config = {
@@ -26,6 +27,7 @@ const DEFAULT_CONFIG: Config = {
   ignore: ['node_modules', 'dist', '.git', 'coverage', '__pycache__', '.next', '.angular'],
   db: join(homedir(), '.project-graph', 'graph.db'),
   watchDebounce: 300,
+  trustedRoots: [join(homedir(), 'Development')],
 };
 
 function expandHome(p: string): string {
@@ -50,6 +52,7 @@ function loadConfig(): Config {
         ...parsed,
         vault: expandHome(parsed.vault ?? DEFAULT_CONFIG.vault),
         db: expandHome(parsed.db ?? DEFAULT_CONFIG.db),
+        trustedRoots: (parsed.trustedRoots ?? DEFAULT_CONFIG.trustedRoots).map(expandHome),
       };
     } catch {
       // not found — try next candidate
