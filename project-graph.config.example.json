@@ -1,5 +1,7 @@
 {
-  "vault": "~/Development/Knowledge",
+  "vault": "~/path/to/your/obsidian-vault",
+  "db": "~/.project-graph/graph.db",
+  "watchDebounce": 300,
   "grammars": [
     { "name": "typescript", "extensions": [".ts", ".tsx"] },
     { "name": "javascript", "extensions": [".js", ".jsx", ".mjs"] },
@@ -13,7 +15,5 @@
     "__pycache__",
     ".next",
     ".angular"
-  ],
-  "db": "~/.project-graph/graph.db",
-  "watchDebounce": 300
+  ]
 }
