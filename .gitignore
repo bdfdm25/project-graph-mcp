@@ -1,6 +1,7 @@
 node_modules/
 dist/
 data/
+coverage/
 *.db
 .env
 project-graph.config.json
