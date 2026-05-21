@@ -53,7 +53,7 @@ SEMANTIC MEMORY    — Obsidian vault: decisions, conventions, wikilinks, gradua
 ## Installation
 
 ```bash
-git clone git@github.com:youruser/project-graph-mcp.git ~/Development/project-graph-mcp
+git clone git@github.com:bdfdm25/project-graph-mcp.git ~/Development/project-graph-mcp
 cd ~/Development/project-graph-mcp
 npm install
 ```

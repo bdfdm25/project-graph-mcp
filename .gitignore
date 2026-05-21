@@ -3,3 +3,4 @@ dist/
 data/
 *.db
 .env
+project-graph.config.json
