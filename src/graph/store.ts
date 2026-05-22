@@ -412,9 +412,10 @@ export function searchObservations(query: string, projectTag?: string, limit = 2
   const ftsQuery = query
     .trim()
     .split(/\s+/)
-    .map((w) => w.replace(/[^a-zA-Z0-9_]/g, '') + '*')
+    .map((w) => w.replace(/[^a-zA-Z0-9_]/g, ''))
     .filter(Boolean)
-    .join(' ');
+    .map((w) => w + '*')
+    .join(' OR ');
   if (projectTag) {
     return db.prepare(`
       SELECT o.*, observations_fts.rank AS rank
