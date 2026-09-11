@@ -93,7 +93,7 @@ CREATE VIRTUAL TABLE nodes_fts USING fts5(symbol, path, ...);
 
 -- Episodic memory
 CREATE TABLE sessions     (id, project_tag, project_path, started_at, ended_at, summary);
-CREATE TABLE observations (id, session_id, project_tag, type, content, context, tags, promoted, created_at);
+CREATE TABLE observations (id, session_id, project_tag, type, content, context, tags, promoted, origin, created_at);
 CREATE VIRTUAL TABLE observations_fts USING fts5(content, context, ...);
 ```
 
@@ -118,3 +118,8 @@ Detailed documentation for each group:
 - [Vault Integration](./vault-integration.md)
 - [Episodic Memory](./episodic-memory.md)
 - [Vault Intelligence](./vault-intelligence.md)
+- [Security and Provenance](./security-and-provenance.md)
+
+Every tool answers through one envelope (`{ ok, tool, data, meta }` / `{ ok, tool, error }`), validates its
+arguments with zod before the handler runs, and attaches provenance to what it returns. See
+[Security and Provenance](./security-and-provenance.md).

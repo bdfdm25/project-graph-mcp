@@ -44,6 +44,7 @@ export interface SearchResult {
   tags: string[];
   snippet: string;   // surrounding context of the match
   score: number;     // match count (simple ranking)
+  mtime: number;     // last modification, in ms — feeds the provenance freshness band
 }
 
 function buildSnippet(text: string, query: string, contextChars = 120): string {
@@ -80,6 +81,7 @@ export function searchVault(query: string, limit = 20): SearchResult[] {
       tags: note.tags,
       snippet: buildSnippet(haystack, query),
       score,
+      mtime: note.mtime,
     });
   }
 

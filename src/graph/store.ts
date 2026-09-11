@@ -16,6 +16,19 @@ export function getDb(): Database.Database {
   return _db;
 }
 
+/**
+ * Add a column to an existing table when it is missing.
+ *
+ * Deliberately created without a DEFAULT: rows written before the column existed
+ * must stay NULL so provenance can mark them "unknown" instead of claiming an
+ * origin they never had.
+ */
+function addColumnIfMissing(db: Database.Database, table: string, column: string, ddl: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (columns.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+}
+
 function migrate(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS projects (
@@ -148,6 +161,8 @@ function migrate(db: Database.Database): void {
         VALUES (new.rowid, new.id, new.project_id, new.source_file, new.symbol, new.type, new.path);
     END;
   `);
+
+  addColumnIfMissing(db, 'observations', 'origin', 'TEXT');
 }
 
 // ─── Projects ────────────────────────────────────────────────────────────────
@@ -202,6 +217,10 @@ export function upsertFile(id: string, projectId: string, path: string, mtime: n
   `).run(id, projectId, path, mtime, hash);
 }
 
+export function deleteFile(projectId: string, path: string): void {
+  getDb().prepare('DELETE FROM files WHERE project_id = ? AND path = ?').run(projectId, path);
+}
+
 export function getFilesForProject(projectId: string): FileRow[] {
   return getDb().prepare('SELECT * FROM files WHERE project_id = ?').all(projectId) as FileRow[];
 }
@@ -250,6 +269,13 @@ export function insertEdge(row: EdgeRow): void {
 
 export function getEdgesForProject(projectId: string): EdgeRow[] {
   return getDb().prepare('SELECT * FROM edges WHERE project_id = ?').all(projectId) as EdgeRow[];
+}
+
+export function getEdgeTargetsForFile(projectId: string, sourceFile: string): string[] {
+  const rows = getDb()
+    .prepare('SELECT to_node FROM edges WHERE project_id = ? AND source_file = ?')
+    .all(projectId, sourceFile) as Array<{ to_node: string }>;
+  return rows.map((row) => row.to_node);
 }
 
 export function getNodesForFile(projectId: string, sourceFile: string): NodeRow[] {
@@ -366,9 +392,13 @@ export interface ObservationRow {
   tags: string | null;
   promoted: number;
   created_at: number;
+  /** Who wrote the row: 'user' | 'agent' | 'hook'. NULL on rows predating origin tracking. */
+  origin: string | null;
 }
 
 export type ObservationType = 'decision' | 'discovery' | 'error' | 'code-change' | 'note' | 'pattern';
+
+export type ObservationOrigin = 'user' | 'agent' | 'hook';
 
 export function insertObservation(row: {
   id: string;
@@ -378,10 +408,11 @@ export function insertObservation(row: {
   content: string;
   context?: Record<string, unknown>;
   tags?: string[];
+  origin?: ObservationOrigin;
 }): void {
   getDb().prepare(`
-    INSERT INTO observations (id, session_id, project_tag, type, content, context, tags, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO observations (id, session_id, project_tag, type, content, context, tags, origin, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     row.id,
     row.session_id,
@@ -390,20 +421,12 @@ export function insertObservation(row: {
     row.content,
     row.context ? JSON.stringify(row.context) : null,
     row.tags ? JSON.stringify(row.tags) : null,
+    row.origin ?? 'agent',
     Date.now()
   );
 }
 
-export interface FtsObservationResult {
-  id: string;
-  session_id: string;
-  project_tag: string | null;
-  type: string;
-  content: string;
-  context: string | null;
-  tags: string | null;
-  promoted: number;
-  created_at: number;
+export interface FtsObservationResult extends ObservationRow {
   rank: number;
 }
 
@@ -436,10 +459,25 @@ export function searchObservations(query: string, projectTag?: string, limit = 2
   `).all(ftsQuery, limit) as FtsObservationResult[];
 }
 
-export function getSessionTimeline(sessionId: string): ObservationRow[] {
+/**
+ * A long session can hold hundreds of observations; returning all of them costs
+ * tens of thousands of tokens, so the caller pages through instead.
+ */
+export function getSessionTimeline(
+  sessionId: string,
+  limit = 50,
+  order: 'asc' | 'desc' = 'asc',
+): ObservationRow[] {
   return getDb().prepare(`
-    SELECT * FROM observations WHERE session_id = ? ORDER BY created_at ASC
-  `).all(sessionId) as ObservationRow[];
+    SELECT * FROM observations WHERE session_id = ? ORDER BY created_at ${order === 'desc' ? 'DESC' : 'ASC'} LIMIT ?
+  `).all(sessionId, limit) as ObservationRow[];
+}
+
+export function countSessionObservations(sessionId: string): number {
+  const row = getDb()
+    .prepare('SELECT COUNT(*) AS total FROM observations WHERE session_id = ?')
+    .get(sessionId) as { total: number };
+  return row.total;
 }
 
 export function getObservation(id: string): ObservationRow | undefined {

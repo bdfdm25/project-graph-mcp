@@ -168,8 +168,8 @@ describe('appendBacklink', () => {
 describe('graduateObservations', () => {
   it('creates file under Resources/graduated/', () => {
     const obs = [
-      { id: 'o1', session_id: 's1', project_tag: 'test', type: 'decision' as const, content: 'decided x', created_at: Date.now(), context: null, tags: null, promoted: 0 },
-      { id: 'o2', session_id: 's1', project_tag: 'test', type: 'note' as const, content: 'noted y', created_at: Date.now(), context: null, tags: null, promoted: 0 },
+      { id: 'o1', session_id: 's1', project_tag: 'test', type: 'decision' as const, content: 'decided x', created_at: Date.now(), context: null, tags: null, promoted: 0, origin: 'agent' },
+      { id: 'o2', session_id: 's1', project_tag: 'test', type: 'note' as const, content: 'noted y', created_at: Date.now(), context: null, tags: null, promoted: 0, origin: 'agent' },
     ];
     const p = graduateObservations({ title: 'Test Grad', observations: obs });
     expect(p).toContain('Resources/graduated/');
@@ -178,8 +178,8 @@ describe('graduateObservations', () => {
 
   it('groups observations by type in body', () => {
     const obs = [
-      { id: 'o1', session_id: 's1', project_tag: null, type: 'decision' as const, content: 'chose A', created_at: Date.now(), context: null, tags: null, promoted: 0 },
-      { id: 'o2', session_id: 's1', project_tag: null, type: 'error' as const, content: 'broke B', created_at: Date.now(), context: null, tags: null, promoted: 0 },
+      { id: 'o1', session_id: 's1', project_tag: null, type: 'decision' as const, content: 'chose A', created_at: Date.now(), context: null, tags: null, promoted: 0, origin: 'agent' },
+      { id: 'o2', session_id: 's1', project_tag: null, type: 'error' as const, content: 'broke B', created_at: Date.now(), context: null, tags: null, promoted: 0, origin: 'agent' },
     ];
     const p = graduateObservations({ title: 'Grouped', observations: obs });
     const content = fs.readFileSync(p, 'utf-8');

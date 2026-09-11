@@ -1,10 +1,9 @@
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+/**
+ * MCP server entry point: sync the most recent project, then serve over stdio.
+ */
+
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
-import { TOOLS, handleTool } from './tools.js';
+import { createServer } from './create-server.js';
 import { getRecentProjects } from '../graph/store.js';
 import { indexProject } from '../graph/builder.js';
 
@@ -14,8 +13,7 @@ import { indexProject } from '../graph/builder.js';
 // Syncing only the most recent project is safe and covers the common case.
 
 function bootSync(): void {
-  const projects = getRecentProjects(1);
-  const project = projects[0];
+  const project = getRecentProjects(1)[0];
   if (!project) return;
   try {
     indexProject(project.root_path);
@@ -26,17 +24,5 @@ function bootSync(): void {
 
 bootSync();
 
-const server = new Server(
-  { name: 'project-graph', version: '0.1.0' },
-  { capabilities: { tools: {} } },
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
-
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args = {} } = request.params;
-  return handleTool(name, args as Record<string, unknown>);
-});
-
 const transport = new StdioServerTransport();
-await server.connect(transport);
+await createServer().connect(transport);

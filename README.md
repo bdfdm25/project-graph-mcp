@@ -130,6 +130,7 @@ All fields are optional — only override what you need:
   "vault": "~/path/to/your/obsidian-vault",
   "db": "~/.project-graph/graph.db",
   "watchDebounce": 300,
+  "trustedRoots": ["~/Development"],
   "grammars": [
     { "name": "typescript", "extensions": [".ts", ".tsx"] },
     { "name": "javascript", "extensions": [".js", ".jsx", ".mjs"] },
@@ -154,7 +155,31 @@ npm install tree-sitter-go
 
 No code changes required — grammars are loaded dynamically.
 
+## Response contract
+
+Every tool returns the same envelope, so a caller branches on `ok` without knowing the tool:
+
+```json
+{ "ok": true,  "tool": "search_vault", "data": { }, "meta": { "count": 3 } }
+{ "ok": false, "tool": "index_project", "error": { "code": "NOT_INDEXED", "message": "…", "field": "project_path", "hint": "…", "retryable": true } }
+```
+
+Payloads are compact JSON (no indentation), list rows carry provenance as `"prov":"agent/high"`,
+and the trust boundary is declared once per result set instead of fencing every row.
+
+Failures also set `isError: true`. Codes: `INVALID_INPUT`, `PATH_NOT_ALLOWED`, `NOT_FOUND`, `NOT_INDEXED`, `TOO_LARGE`, `NO_MATCH`, `UNKNOWN_TOOL`, `INTERNAL`.
+
+Arguments are validated with zod before any handler runs, and unknown argument names are rejected rather than ignored.
+
+## Trust model in one paragraph
+
+Text read from disk or the memory store is marked untrusted — fenced in `<external-content … trust="untrusted">` when it is the whole payload, declared once in `meta.untrusted` when it is a list — with credentials redacted and injection-heuristic signals attached as `flags`. It is data to summarize, never instructions to follow. Reads are confined to `trustedRoots` plus the vault, with symlinks resolved before the containment check and a deny list for keys, `.env` files and credential stores. Every item also carries `provenance: { source, source_type, origin, trust, confidence, reason }`, where `origin` distinguishes what a human said, what a model concluded, what a hook captured mechanically, and what the server derived from parsed code.
+
+Full details: [docs/security-and-provenance.md](docs/security-and-provenance.md), or the `project-graph://docs/provenance` resource at runtime.
+
 ## Tools reference (26 tools)
+
+Every read tool attaches provenance — `"prov":"origin/confidence"` on list rows, a full block on single-item payloads. Default result counts are small (8 for the searches, 6 for `search_knowledge`, 15 for `trace_idea`); the cap is 100.
 
 ### Code graph
 
@@ -196,9 +221,9 @@ No code changes required — grammars are loaded dynamically.
 
 | Tool | Args | Description |
 |---|---|---|
-| `write_observation` | `session_id`, `project_tag`, `type`, `content`, `context?`, `tags?` | Records an observation (decision/discovery/error/code-change/note/pattern). `context` is an optional object `{ file?, line?, tool?, symbol?, url? }` |
+| `write_observation` | `session_id`, `type`, `content`, `project_tag?`, `context?`, `tags?`, `origin?` | Records an observation (decision/discovery/error/code-change/note/pattern). `context` is an optional object `{ file?, line?, tool?, symbol?, url? }` |
 | `search_observations` | `query`, `project_tag?`, `limit?` | FTS5 search across all recorded observations |
-| `get_session_timeline` | `session_id` | All observations from a session in chronological order |
+| `get_session_timeline` | `session_id`, `limit?`, `order?` | Observations from a session in order (first 50 by default; `order:"desc"` reads the tail) |
 | `get_observation` | `id` | Fetch a single observation by ID |
 | `list_sessions` | `project_tag?`, `limit?` | List recorded sessions |
 | `close_session` | `session_id`, `summary?` | Mark a session as ended |
@@ -207,7 +232,7 @@ No code changes required — grammars are loaded dynamically.
 
 | Tool | Args | Description |
 |---|---|---|
-| `get_vault_index` | — | All vault notes grouped by PARA area, sorted by mtime |
+| `get_vault_index` | `area?`, `detail?` | Per-area note counts; with `area`, the notes in it (`detail:"full"` adds tags/links/mtime) |
 | `trace_idea` | `topic`, `limit?` | Trace how an idea evolved across notes (chronological timeline + backlinks) |
 | `detect_emerging_clusters` | `min_cluster_size?`, `limit?` | Louvain community detection on the wikilink graph |
 | `graduate_observations` | `title`, `query`, `project_tag?`, `tags?` | Promote SQLite observations to a structured vault note |
@@ -319,14 +344,25 @@ src/
 │   ├── intelligence.ts    # getVaultIndex, traceIdea, detectEmergingClusters
 │   └── obsidian-cli.ts    # Optional HTTP client for Obsidian REST API (port 27124)
 └── mcp/
-    ├── server.ts          # MCP server, boot sync, stdio transport
-    └── tools.ts           # 26 tool definitions + handlers
+    ├── server.ts          # Entry point: boot sync + stdio transport
+    ├── create-server.ts   # McpServer assembly: registerTool + resources
+    ├── response.ts        # ok/fail envelope + error codes
+    ├── security.ts        # Path admission, secret redaction, injection scan, caps
+    ├── provenance.ts      # Origin inference + confidence bands
+    ├── docs.ts            # Long-form docs served as MCP resources
+    └── tools/
+        ├── index.ts       # Registry, zod validation, dispatch
+        ├── shared.ts      # Contract type, doc renderer, guards
+        ├── code.ts        # 9 code-graph tools
+        ├── vault.ts       # 10 vault tools
+        └── memory.ts      # 7 episodic-memory tools
 docs/
 ├── overview.md            # Architecture, system diagram, DB schema, tool inventory
 ├── code-graph.md          # Code graph tools in detail
 ├── vault-integration.md   # Vault I/O tools in detail
 ├── episodic-memory.md     # Episodic memory tools + hooks system
-└── vault-intelligence.md  # Intelligence tools + Louvain + Obsidian CLI
+├── vault-intelligence.md  # Intelligence tools + Louvain + Obsidian CLI
+└── security-and-provenance.md  # Trust boundary, redaction, confidence bands
 ```
 
 ### Database schema (key tables)
@@ -340,14 +376,17 @@ vault_notes  (id, path, title, tags, links, content, mtime)
 
 -- Episodic memory
 sessions     (id, project_tag, project_path, started_at, ended_at, summary)
-observations (id, session_id, project_tag, type, content, context, tags, promoted, created_at)
+observations (id, session_id, project_tag, type, content, context, tags, promoted, origin, created_at)
 observations_fts (FTS5, auto-synced via triggers)
 ```
 
 ### Known constraints
 
 - **Grammar versions**: `tree-sitter-typescript@0.23.2` requires `tree-sitter@^0.21`. JS and Python grammars are pinned to `@0.21.x` for compatibility.
+- **Self-healing edges**: an import is resolved against the disk at parse time, so a target written moments later resolves to nothing. Matching mtimes would cache that miss forever, so `index_project` re-parses any file whose stored imports point at paths that no longer exist and reports the count as `filesRepaired`.
 - **FTS5 rebuild**: `nodes_fts` is an external content table. After a full index run, `rebuildFts()` is called explicitly — triggers alone do not populate external content tables.
 - **Boot sync**: only the most recently used project is synced on startup. Syncing all projects on every session causes write contention in multi-session use.
-- **Hooks cannot call MCP**: shell hooks write directly to SQLite via the `sqlite3` CLI. Only Claude (via MCP tools) can call `write_observation` for rich, semantic observations.
+- **Session-start injection**: the `memory-inject.sh` hook injects recent semantic observations (hook-origin rows excluded) plus per-area note counts — ~450 tokens. Titles come from `get_vault_index({ area })` when a task needs them.
+- **Hooks cannot call MCP**: shell hooks write directly to SQLite via the `sqlite3` CLI, stamping `origin = 'hook'` so provenance can rank them below agent-written observations. Only Claude (via MCP tools) can call `write_observation` for rich, semantic observations.
+- **Legacy observations**: rows written before the `origin` column keep `NULL` and are inferred at read time (`hook` for tool-stamped one-liners, `unknown` otherwise). No backfill is performed — guessing an origin would be worse than admitting it is unknown.
 - **Obsidian CLI**: `trace_idea` and `get_vault_index` augment results via the Obsidian Local REST API plugin when available, but degrade gracefully when Obsidian is not running.
