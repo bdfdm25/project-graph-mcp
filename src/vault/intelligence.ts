@@ -5,9 +5,9 @@
 // Obsidian CLI when available.
 
 import { join, basename } from 'path';
-import { readdirSync } from 'fs';
 import { config } from '../config.js';
 import { parseVaultNote, type VaultNote } from '../parsers/vault-parser.js';
+import { collectMarkdownFiles } from './walk.js';
 import { isObsidianCliAvailable, searchVaultCli } from './obsidian-cli.js';
 import { UndirectedGraph } from 'graphology';
 import louvainModule from 'graphology-communities-louvain';
@@ -18,29 +18,10 @@ const louvain = (louvainModule as any).default ?? louvainModule;
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function collectAllNotes(): VaultNote[] {
-  const results: VaultNote[] = [];
-
-  function walk(dir: string): void {
-    let entries: import('fs').Dirent<string>[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true, encoding: 'utf-8' });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-      } else if (entry.isFile() && entry.name.endsWith('.md') && !entry.name.endsWith('.claude.md')) {
-        const note = parseVaultNote(full);
-        if (note) results.push(note);
-      }
-    }
-  }
-
-  walk(config.vault);
-  return results;
+  return collectMarkdownFiles(config.vault).flatMap((path) => {
+    const note = parseVaultNote(path);
+    return note ? [note] : [];
+  });
 }
 
 function noteTitle(note: VaultNote): string {
