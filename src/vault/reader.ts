@@ -1,32 +1,7 @@
-import { readdirSync, statSync } from 'fs';
-import { join, extname } from 'path';
+import { join } from 'path';
 import { config } from '../config.js';
 import { parseVaultNote, type VaultNote } from '../parsers/vault-parser.js';
-
-// ─── Vault file discovery ─────────────────────────────────────────────────────
-
-function collectMarkdownFiles(dir: string): string[] {
-  const results: string[] = [];
-  function walk(current: string): void {
-    let entries: import('fs').Dirent<string>[];
-    try {
-      entries = readdirSync(current, { withFileTypes: true, encoding: 'utf-8' });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.name.startsWith('.')) continue;
-      const full = join(current, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-      } else if (entry.isFile() && extname(entry.name) === '.md') {
-        results.push(full);
-      }
-    }
-  }
-  walk(dir);
-  return results;
-}
+import { collectMarkdownFiles } from './walk.js';
 
 function loadAllNotes(): VaultNote[] {
   const files = collectMarkdownFiles(config.vault);
