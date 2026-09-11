@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -94,6 +94,30 @@ describe('writeSessionHandoff', () => {
   it('writes project to frontmatter when provided', () => {
     const p = writeSessionHandoff({ summary: 'test', project: 'my-project' });
     expect(readNote(p).data.project).toBe('my-project');
+  });
+
+  describe('when local time is behind UTC', () => {
+    // 22:30:05 in São Paulo (UTC-3) is already the next day in UTC.
+    beforeEach(() => {
+      vi.stubEnv('TZ', 'America/Sao_Paulo');
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-09-12T01:30:05Z'));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    });
+
+    it('names the file with the local timestamp', () => {
+      const p = writeSessionHandoff({ summary: 'test' });
+      expect(path.basename(p)).toBe('2026-09-11-223005-handoff.md');
+    });
+
+    it('writes the local date to frontmatter', () => {
+      const p = writeSessionHandoff({ summary: 'test' });
+      expect(fs.readFileSync(p, 'utf-8')).toContain('date: 2026-09-11\n');
+    });
   });
 });
 

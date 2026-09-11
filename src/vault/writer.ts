@@ -5,8 +5,18 @@ import type { ObservationRow } from '../graph/store.js';
 
 // ─── Frontmatter builder ──────────────────────────────────────────────────────
 
-function isoDate(): string {
-  return new Date().toISOString().slice(0, 10);
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+// Local calendar date (YYYY-MM-DD). toISOString() is UTC and would roll the date forward late in the day.
+function isoDate(now = new Date()): string {
+  return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+}
+
+// Local YYYY-MM-DD-HHMMSS, safe for filenames.
+function localTimestamp(now: Date): string {
+  return `${isoDate(now)}-${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
 }
 
 const FRONTMATTER_UNSAFE = /[:#"'\n\r]/;
@@ -77,9 +87,9 @@ export interface WriteHandoffOptions {
 }
 
 export function writeSessionHandoff(opts: WriteHandoffOptions): string {
-  const date = isoDate();
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const relPath = `Archive/sessions/${timestamp}-handoff.md`;
+  const now = new Date();
+  const date = isoDate(now);
+  const relPath = `Archive/sessions/${localTimestamp(now)}-handoff.md`;
 
   const frontmatter: Record<string, unknown> = {
     date,
