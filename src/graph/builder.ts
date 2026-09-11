@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { readdirSync, statSync } from 'fs';
+import { existsSync, readdirSync, statSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import { config } from '../config.js';
 import { parseFile } from '../parsers/code-parser.js';
@@ -13,6 +13,8 @@ import {
   getFilesForProject,
   rebuildFts,
   type FileRow,
+  deleteFile,
+  getEdgeTargetsForFile,
 } from './store.js';
 import { startWatcher } from './watcher.js';
 import { detectAndStoreCommunities } from './communities.js';
@@ -94,6 +96,13 @@ function resolveImport(fromFile: string, specifier: string, projectRoot: string)
   return tryResolve(base);
 }
 
+/** True when a stored edge points at an absolute path that is no longer on disk. */
+function hasDanglingEdges(projectId: string, filePath: string): boolean {
+  return getEdgeTargetsForFile(projectId, filePath).some(
+    (target) => target.startsWith('/') && !existsSync(target),
+  );
+}
+
 // ─── Index a project ─────────────────────────────────────────────────────────
 
 export interface IndexResult {
@@ -101,6 +110,8 @@ export interface IndexResult {
   name: string;
   rootPath: string;
   filesIndexed: number;
+  /** Unchanged files re-parsed because their stored edges pointed at files that no longer exist. */
+  filesRepaired: number;
   filesSkipped: number;
   nodesCreated: number;
   edgesCreated: number;
@@ -124,6 +135,7 @@ export function indexProject(rootPath: string): IndexResult {
   );
 
   let filesIndexed = 0;
+  let filesRepaired = 0;
   let filesSkipped = 0;
   let nodesCreated = 0;
   let edgesCreated = 0;
@@ -143,10 +155,16 @@ export function indexProject(rootPath: string): IndexResult {
       continue;
     }
 
-    if (existing && existing.mtime === mtime) {
+    // An import is resolved against the disk at parse time, so a target written a
+    // moment later resolves to nothing and the miss is stored. Matching mtimes would
+    // then cache that miss forever, so a file whose edges point at paths that do not
+    // exist is re-parsed even when it has not changed.
+    const needsRepair = existing !== undefined && hasDanglingEdges(pid, filePath);
+    if (existing && existing.mtime === mtime && !needsRepair) {
       filesSkipped++;
       continue;
     }
+    if (needsRepair && existing.mtime === mtime) filesRepaired++;
 
     const parsed = parseFile(filePath);
     if (!parsed) {
@@ -196,10 +214,12 @@ export function indexProject(rootPath: string): IndexResult {
     filesIndexed++;
   }
 
-  // Remove DB records for files deleted from disk
+  // Remove DB records for files deleted from disk. The fingerprint row goes too —
+  // leaving it behind makes the file look indexed-but-stale forever.
   for (const [path] of existingFiles) {
     if (!seenPaths.has(path)) {
       clearSourceFile(pid, path);
+      deleteFile(pid, path);
     }
   }
 
@@ -208,5 +228,5 @@ export function indexProject(rootPath: string): IndexResult {
   rebuildFts();
   startWatcher(pid, absRoot);
 
-  return { projectId: pid, name, rootPath: absRoot, filesIndexed, filesSkipped, nodesCreated, edgesCreated, clusters: clusters.length };
+  return { projectId: pid, name, rootPath: absRoot, filesIndexed, filesRepaired, filesSkipped, nodesCreated, edgesCreated, clusters: clusters.length };
 }
